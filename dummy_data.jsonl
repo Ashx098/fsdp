@@ -1,0 +1,6 @@
+{"text": "This is a test sentence for the dummy dataset."}
+{"text": "Another sentence to check if training works."}
+{"text": "We need enough data to form a batch."}
+{"text": "FSDP and LoRA are cool technologies."}
+{"text": "Fine-tuning LLMs is fun and useful."}
+{"text": "This is the end of the dummy dataset."}
