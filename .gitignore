@@ -1,0 +1,54 @@
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+fsdp_env/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# IDE/editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+*~
+
+# Data and models
+data/
+datasets/
+models/
+checkpoints/
+**/checkpoint-*/
+**/*.safetensors
+**/*.bin
+**/optimizer.pt
+**/scheduler.pt
+**/rng_state.pth
+
+# Training outputs and logs
+output/
+test_output/
+logs/
+runs/
+wandb/
+
+# Caches
+.cache/
+**/.cache/
+hf_cache/
+cache/
+
+# OS/filesystem cruft
+.DS_Store
+Thumbs.db
+
+# Notebooks
