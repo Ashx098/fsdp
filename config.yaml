@@ -1,0 +1,42 @@
+model:
+  name_or_path: "meta-llama/Llama-2-7b-hf" # Replace with your model path
+  use_auth_token: False
+
+data:
+  dataset_path: "wikitext" # Replace with your dataset path
+  dataset_name: "wikitext-2-raw-v1"
+  text_column: "text"
+  block_size: 1024
+  preprocessing_num_workers: 4
+
+training:
+  output_dir: "./output"
+  num_train_epochs: 3
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 2
+  learning_rate: 2.0e-4
+  weight_decay: 0.001
+  logging_steps: 10
+  save_steps: 100
+  save_total_limit: 2
+  bf16: True # Use bf16 if supported, else fp16
+  fp16: False
+  optim: "paged_adamw_32bit"
+  report_to: "tensorboard"
+
+lora:
+  r: 8
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: "none"
+  task_type: "CAUSAL_LM"
+  target_modules: ["q_proj", "v_proj"] # Adjust based on model architecture
+
+fsdp:
+  # These are passed to Accelerate/Trainer
+  fsdp_transformer_layer_cls_to_wrap: "LlamaDecoderLayer"
+  fsdp: "full_shard auto_wrap"
+  fsdp_config:
+    backward_prefetch: "backward_pre"
+    forward_prefetch: "false"
+    use_orig_params: "false"
