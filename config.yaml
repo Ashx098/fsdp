@@ -1,28 +1,31 @@
 model:
-  name_or_path: "meta-llama/Llama-2-7b-hf" # Replace with your model path
-  use_auth_token: False
+  name_or_path: "zai-org/GLM-4.5-Air"
+  use_auth_token: True # Likely requires acceptance of terms
+  trust_remote_code: True
 
 data:
-  dataset_path: "wikitext" # Replace with your dataset path
+  dataset_path: "wikitext" # Replace with your actual dataset
   dataset_name: "wikitext-2-raw-v1"
   text_column: "text"
-  block_size: 1024
-  preprocessing_num_workers: 4
+  block_size: 16384 # Max safe seq len for 8xH200
+  preprocessing_num_workers: 8
 
 training:
-  output_dir: "./output"
+  output_dir: "./glm_output"
   num_train_epochs: 3
-  per_device_train_batch_size: 4
-  gradient_accumulation_steps: 2
-  learning_rate: 2.0e-4
-  weight_decay: 0.001
-  logging_steps: 10
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4 # Effective batch size = 8 * 1 * 4 = 32
+  learning_rate: 1.0e-5 # Lower LR for fine-tuning large models
+  weight_decay: 0.01
+  logging_steps: 20 # Log router stats every 20 steps
+  eval_steps: 100
   save_steps: 100
   save_total_limit: 2
-  bf16: True # Use bf16 if supported, else fp16
+  bf16: True
   fp16: False
-  optim: "paged_adamw_32bit"
-  report_to: "tensorboard"
+  optim: "adamw_torch" # FSDP handles optimizer state sharding
+  gradient_checkpointing: True
+  report_to: "wandb"
 
 lora:
   r: 8
@@ -30,13 +33,13 @@ lora:
   lora_dropout: 0.05
   bias: "none"
   task_type: "CAUSAL_LM"
-  target_modules: ["q_proj", "v_proj"] # Adjust based on model architecture
+  target_modules: ["query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"] # Typical GLM/ChatGLM modules, adjust if needed
 
 fsdp:
-  # These are passed to Accelerate/Trainer
-  fsdp_transformer_layer_cls_to_wrap: "LlamaDecoderLayer"
+  fsdp_transformer_layer_cls_to_wrap: "GLMBlock" # Verify exact class name in model code
   fsdp: "full_shard auto_wrap"
   fsdp_config:
     backward_prefetch: "backward_pre"
     forward_prefetch: "false"
     use_orig_params: "false"
+    activation_checkpointing: "true" # Critical for 106B model
