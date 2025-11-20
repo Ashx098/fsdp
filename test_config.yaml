@@ -1,0 +1,41 @@
+model:
+  name_or_path: "gpt2" # Small model for testing
+  use_auth_token: False
+
+data:
+  dataset_path: "/home/aviinashh/projects/fsdp/dummy_data.jsonl"
+  dataset_name: "json"
+  text_column: "text"
+  block_size: 128
+  preprocessing_num_workers: 1
+
+training:
+  output_dir: "./test_output"
+  num_train_epochs: 1
+  max_steps: 5
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 1
+  learning_rate: 2.0e-4
+  weight_decay: 0.001
+  logging_steps: 1
+  save_steps: 10
+  save_total_limit: 1
+  bf16: False
+  fp16: False
+  optim: "adamw_torch"
+  report_to: "none"
+
+lora:
+  r: 8
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: "none"
+  task_type: "CAUSAL_LM"
+  target_modules: ["c_attn"] # GPT2 specific
+
+fsdp:
+  fsdp: "" # Disable FSDP for simple test or keep it if environment supports it
+  fsdp_config:
+    backward_prefetch: "backward_pre"
+    forward_prefetch: "false"
+    use_orig_params: "false"
