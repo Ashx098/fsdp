@@ -237,7 +237,7 @@ def main():
     
     # Initialize Accelerator with extended timeout for large model synchronization
     project_config = ProjectConfiguration(project_dir=output_dir, logging_dir=logs_dir)
-    timeout_kwargs = InitProcessGroupKwargs(timeout=timedelta(minutes=120))
+    timeout_kwargs = InitProcessGroupKwargs(timeout=timedelta(minutes=180))
     
     accelerator = Accelerator(
         gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
@@ -343,7 +343,14 @@ def main():
     def collate_fn(batch):
         input_ids = torch.stack([torch.tensor(item['input_ids']) for item in batch])
         attention_mask = torch.stack([torch.tensor(item['attention_mask']) for item in batch])
+        
         labels = input_ids.clone()
+        
+        # CRITICAL FIX: Ignore padding in loss calculation
+        # Wherever attention_mask is 0 (padding), set label to -100
+        # PyTorch ignores -100 when calculating cross-entropy loss
+        labels[attention_mask == 0] = -100
+        
         return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
 
     train_dataloader = DataLoader(
