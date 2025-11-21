@@ -1,45 +1,41 @@
 model:
-  name_or_path: "zai-org/GLM-4.5-Air"
-  use_auth_token: True # Likely requires acceptance of terms
+  name_or_path: "/workspace/Avinash/models/GLM-4.5-Air"
   trust_remote_code: True
 
 data:
-  dataset_path: "wikitext" # Replace with your actual dataset
-  dataset_name: "wikitext-2-raw-v1"
+  dataset_path: "/workspace/Avinash/dataset/all_data.jsonl"
+  dataset_name: "HS-v1"
   text_column: "text"
-  block_size: 16384 # Max safe seq len for 8xH200
+  block_size: 1024
+  val_split: 0.01  # Small validation set (1%)
   preprocessing_num_workers: 8
 
 training:
   output_dir: "./glm_output"
+  seed: 42
   num_train_epochs: 3
-  per_device_train_batch_size: 1
-  gradient_accumulation_steps: 4 # Effective batch size = 8 * 1 * 4 = 32
-  learning_rate: 1.0e-5 # Lower LR for fine-tuning large models
+  per_device_train_batch_size: 4  # Increased from 1 - we have headroom with proper FSDP sharding (87GB/141GB)
+  per_device_eval_batch_size: 4  # Match train batch size
+  gradient_accumulation_steps: 1  # Debugging: Disable accumulation to avoid no_sync
+  learning_rate: 2.0e-5  # Conservative for large model
   weight_decay: 0.01
-  logging_steps: 20 # Log router stats every 20 steps
-  eval_steps: 100
-  save_steps: 100
-  save_total_limit: 2
+  logging_steps: 1
+  eval_strategy: "no"  # Disable eval for now to avoid issues
+  eval_steps: 10
+  save_strategy: "steps"
+  save_steps: 10  # Save more frequently for safety
+  save_total_limit: 2  # Keep only 2 checkpoints to save disk
+  save_on_each_node: false
   bf16: True
   fp16: False
-  optim: "adamw_torch" # FSDP handles optimizer state sharding
-  gradient_checkpointing: True
-  report_to: "wandb"
+  gradient_checkpointing: True  # Essential for memory
+  report_to: "none"
+  disable_tqdm: False
 
 lora:
-  r: 8
-  lora_alpha: 32
+  r: 16  # REDUCED from 32 - less memory
+  lora_alpha: 32  # Match 2*r
   lora_dropout: 0.05
   bias: "none"
   task_type: "CAUSAL_LM"
-  target_modules: ["query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"] # Typical GLM/ChatGLM modules, adjust if needed
-
-fsdp:
-  fsdp_transformer_layer_cls_to_wrap: "GLMBlock" # Verify exact class name in model code
-  fsdp: "full_shard auto_wrap"
-  fsdp_config:
-    backward_prefetch: "backward_pre"
-    forward_prefetch: "false"
-    use_orig_params: "false"
-    activation_checkpointing: "true" # Critical for 106B model
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]  # Attention only
