@@ -6,7 +6,8 @@ data:
   dataset_path: "/workspace/Avinash/dataset/all_data.jsonl"
   dataset_name: "HS-v1"
   text_column: "text"
-  block_size: 1024
+  block_size: 10240 #8192  # Long context for maximum expert coverage 1140
+  num_proc: 8  # Parallel processing for tokenization
   val_split: 0.01  # Small validation set (1%)
   preprocessing_num_workers: 8
 
@@ -14,16 +15,16 @@ training:
   output_dir: "./glm_output"
   seed: 42
   num_train_epochs: 3
-  per_device_train_batch_size: 4  # Increased from 1 - we have headroom with proper FSDP sharding (87GB/141GB)
-  per_device_eval_batch_size: 4  # Match train batch size
-  gradient_accumulation_steps: 1  # Debugging: Disable accumulation to avoid no_sync
+  per_device_train_batch_size: 1  # Required for 8k context length
+  per_device_eval_batch_size: 1  # Match train batch size
+  gradient_accumulation_steps: 16  # Debugging: Disable accumulation to avoid no_sync
   learning_rate: 2.0e-5  # Conservative for large model
   weight_decay: 0.01
   logging_steps: 1
   eval_strategy: "no"  # Disable eval for now to avoid issues
-  eval_steps: 10
+  eval_steps: 1000
   save_strategy: "steps"
-  save_steps: 10  # Save more frequently for safety
+  save_steps: 1000  # Save more frequently for safety
   save_total_limit: 2  # Keep only 2 checkpoints to save disk
   save_on_each_node: false
   bf16: True
