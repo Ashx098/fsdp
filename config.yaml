@@ -8,7 +8,7 @@ data:
   text_column: "text"
   block_size: 10240 #8192  # Long context for maximum expert coverage 1140
   num_proc: 8  # Parallel processing for tokenization
-  val_split: 0.01  # Small validation set (1%)
+  val_split: 0.1  # Small validation set (1%)
   preprocessing_num_workers: 8
 
 training:
@@ -17,15 +17,15 @@ training:
   num_train_epochs: 3
   per_device_train_batch_size: 1  # Required for 8k context length
   per_device_eval_batch_size: 1  # Match train batch size
-  gradient_accumulation_steps: 16  # Debugging: Disable accumulation to avoid no_sync
-  learning_rate: 2.0e-5  # Conservative for large model
-  weight_decay: 0.01
+  gradient_accumulation_steps: 2  # Set to 2 for packed data
+  learning_rate: 3.0e-5  # Conservative for large model
+  weight_decay: 0.1
   logging_steps: 1
-  eval_strategy: "no"  # Disable eval for now to avoid issues
-  eval_steps: 1000
+  eval_strategy: "steps"  # Run evaluation every eval_steps
+  eval_steps: 20  # Evaluate every 20 steps (~15% of training)
   save_strategy: "steps"
-  save_steps: 1000  # Save more frequently for safety
-  save_total_limit: 2  # Keep only 2 checkpoints to save disk
+  save_steps: 20  # Save every 20 steps for packed data
+  save_total_limit: 3  # Keep only 3 best checkpoints
   save_on_each_node: false
   bf16: True
   fp16: False
@@ -34,9 +34,9 @@ training:
   disable_tqdm: False
 
 lora:
-  r: 16  # REDUCED from 32 - less memory
-  lora_alpha: 32  # Match 2*r
-  lora_dropout: 0.05
+  r: 64  # REDUCED from 32 - less memory
+  lora_alpha: 128  # Match 2*r
+  lora_dropout: 0.1
   bias: "none"
   task_type: "CAUSAL_LM"
   target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]  # Attention only

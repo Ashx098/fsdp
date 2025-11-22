@@ -314,23 +314,49 @@ def main():
     accelerator.print("Loading dataset...")
     dataset = load_dataset("json", data_files=config['data']['dataset_path'], split="train")
     
+    # --- PACKING LOGIC START ---
+    # Step 1: Tokenize without padding/truncation
     def tokenize_function(examples):
-        return tokenizer(
-            examples[config['data']['text_column']],
-            truncation=True,
-            max_length=config['data']['block_size'],
-            padding="max_length",
-            return_attention_mask=True,
-        )
-    
+        # Just tokenize, don't pad/truncate yet
+        return tokenizer(examples[config['data']['text_column']])
+
     with accelerator.main_process_first():
         tokenized_dataset = dataset.map(
             tokenize_function,
             batched=True,
             remove_columns=dataset.column_names,
             num_proc=config['data']['preprocessing_num_workers'],
-            desc="Tokenizing dataset"
+            desc="Tokenizing raw text"
         )
+
+    # Step 2: Pack sequences by concatenation
+    def group_texts(examples):
+        # Concatenate all texts
+        concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+        total_length = len(concatenated_examples[list(examples.keys())[0]])
+        
+        # Drop the small remainder at the end
+        block_size = config['data']['block_size']
+        total_length = (total_length // block_size) * block_size
+        
+        # Split by chunks of block_size
+        result = {
+            k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
+            for k, t in concatenated_examples.items()
+        }
+        
+        # Create labels (same as input_ids)
+        result["labels"] = result["input_ids"].copy()
+        return result
+
+    with accelerator.main_process_first():
+        tokenized_dataset = tokenized_dataset.map(
+            group_texts,
+            batched=True,
+            num_proc=config['data']['preprocessing_num_workers'],
+            desc="Packing sequences"
+        )
+    # --- PACKING LOGIC END ---
     
     # Split train/eval
     split = tokenized_dataset.train_test_split(test_size=config['data']['val_split'], seed=42)
@@ -341,16 +367,10 @@ def main():
     accelerator.print(f"Eval samples: {len(eval_dataset)}")
     
     def collate_fn(batch):
+        # Simple stack, data is already uniform shape (packed to block_size)
         input_ids = torch.stack([torch.tensor(item['input_ids']) for item in batch])
-        attention_mask = torch.stack([torch.tensor(item['attention_mask']) for item in batch])
-        
-        labels = input_ids.clone()
-        
-        # CRITICAL FIX: Ignore padding in loss calculation
-        # Wherever attention_mask is 0 (padding), set label to -100
-        # PyTorch ignores -100 when calculating cross-entropy loss
-        labels[attention_mask == 0] = -100
-        
+        attention_mask = torch.ones_like(input_ids)  # All tokens are real now (no padding)
+        labels = torch.stack([torch.tensor(item['labels']) for item in batch])
         return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
 
     train_dataloader = DataLoader(
@@ -381,27 +401,38 @@ def main():
         eps=1e-8
     )
     
-    # Scheduler
+    # Prepare with Accelerator FIRST (before calculating scheduler steps)
+    model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+        model, optimizer, train_dataloader, eval_dataloader
+    )
+    
+    # CRITICAL: Calculate steps AFTER prepare() to get accurate sharded dataloader length
+    # After prepare(), len(train_dataloader) returns the number of batches THIS rank will see
+    # which already accounts for data sharding across GPUs
     num_epochs = config['training']['num_train_epochs']
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / config['training']['gradient_accumulation_steps'])
+    
+    # Each step of train_dataloader processes one batch on this GPU
+    # With gradient_accumulation_steps, we do N forward passes per optimizer step
+    # So: optimizer_steps_per_epoch = len(train_dataloader) / gradient_accumulation_steps
+    num_batches_per_epoch = len(train_dataloader)
+    num_update_steps_per_epoch = num_batches_per_epoch // config['training']['gradient_accumulation_steps']
     max_train_steps = num_epochs * num_update_steps_per_epoch
     
     num_warmup_steps = int(0.03 * max_train_steps)
     
+    # CRITICAL: The scheduler runs on each rank independently, so each rank steps it max_train_steps times
+    # Do NOT prepare the scheduler - it doesn't need to be distributed and prepare() would divide steps by num_processes
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=num_warmup_steps,
         num_training_steps=max_train_steps
     )
     
-    accelerator.print(f"Total training steps: {max_train_steps}")
+    accelerator.print(f"Batches per epoch (per rank): {num_batches_per_epoch}")
+    accelerator.print(f"Gradient accumulation steps: {config['training']['gradient_accumulation_steps']}")
+    accelerator.print(f"Optimizer steps per epoch: {num_update_steps_per_epoch}")
+    accelerator.print(f"Total training steps (per rank): {max_train_steps}")
     accelerator.print(f"Warmup steps: {num_warmup_steps}")
-    accelerator.print(f"Steps per epoch: {num_update_steps_per_epoch}")
-    
-    # Prepare with Accelerator
-    model, optimizer, train_dataloader, eval_dataloader, scheduler = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader, scheduler
-    )
     
     # Resume if needed
     start_step = 0
@@ -434,8 +465,30 @@ def main():
     checkpoint_tracker = {}
     best_eval_loss = float('inf')
     
+    accelerator.print("="*50)
+    accelerator.print("Starting training...")
+    accelerator.print("="*50)
+    
+    # Baseline evaluation at step 0
+    if config['training'].get('eval_strategy') == "steps":
+        accelerator.print("\n" + "="*50)
+        accelerator.print("Running baseline evaluation (Step 0)...")
+        accelerator.print("="*50)
+        baseline_metrics = evaluate(model, eval_dataloader, accelerator)
+        
+        if accelerator.is_main_process:
+            print(f"✓ Baseline Eval Loss: {baseline_metrics['eval_loss']:.4f} | Perplexity: {baseline_metrics['eval_perplexity']:.2f}")
+            with open(eval_log_path, "a") as f:
+                baseline_metrics['step'] = 0
+                f.write(json.dumps(baseline_metrics) + "\n")
+            best_eval_loss = baseline_metrics['eval_loss']
+        
+        accelerator.wait_for_everyone()
+    
     start_time = time.time()
     log_loss = 0
+    last_log_time = start_time
+    steps_since_last_log = 0
     
     for epoch in range(start_epoch, int(num_epochs)):
         accelerator.print(f"\n{'='*50}")
@@ -476,8 +529,17 @@ def main():
                             avg_loss = log_loss / config['training']['logging_steps']
                             log_loss = 0
                             
-                            elapsed = time.time() - start_time
-                            steps_per_sec = (global_step - start_step) / elapsed if elapsed > 0 else 0
+                            # Calculate smooth speed (steps in last logging interval)
+                            current_time = time.time()
+                            time_since_last_log = current_time - last_log_time
+                            smooth_speed = config['training']['logging_steps'] / time_since_last_log if time_since_last_log > 0 else 0
+                            last_log_time = current_time
+                            
+                            # Calculate ETA
+                            remaining_steps = max_train_steps - global_step
+                            eta_seconds = remaining_steps / smooth_speed if smooth_speed > 0 else 0
+                            eta_str = format_time(eta_seconds)
+                            
                             lr = scheduler.get_last_lr()[0]
                             
                             if accelerator.is_main_process:
@@ -486,8 +548,9 @@ def main():
                                     "epoch": epoch + (step / len(train_dataloader)),
                                     "loss": avg_loss,
                                     "lr": lr,
-                                    "steps_per_sec": steps_per_sec,
-                                    "grad_norm": float(total_norm) if total_norm is not None else 0.0
+                                    "steps_per_sec": smooth_speed,
+                                    "grad_norm": float(total_norm) if total_norm is not None else 0.0,
+                                    "eta_seconds": eta_seconds
                                 }
                                 
                                 with open(train_log_path, "a") as f:
@@ -496,31 +559,36 @@ def main():
                                 print(f"Step {global_step}/{max_train_steps} | "
                                       f"Loss: {avg_loss:.4f} | "
                                       f"LR: {lr:.2e} | "
-                                      f"Speed: {steps_per_sec:.2f} it/s | "
-                                      f"Grad: {float(total_norm):.2f}")
+                                      f"Speed: {smooth_speed:.2f} it/s | "
+                                      f"Grad: {float(total_norm):.2f} | "
+                                      f"ETA: {eta_str}")
                         
                         # Expert Usage
                         if global_step % 100 == 0:
                             log_expert_usage(model, outputs, global_step, accelerator, expert_log_path)
                         
-                        # Evaluation & Checkpointing
-                        if global_step % config['training']['save_steps'] == 0:
-                            eval_loss = None
+                        # Evaluation (separate from checkpointing)
+                        just_evaluated = False
+                        if config['training'].get('eval_strategy') == "steps" and global_step % config['training']['eval_steps'] == 0:
+                            accelerator.print(f"\nRunning evaluation at step {global_step}...")
+                            metrics = evaluate(model, eval_dataloader, accelerator)
+                            eval_loss = metrics['eval_loss']
+                            just_evaluated = True
                             
-                            if config['training'].get('eval_strategy') != "no":
-                                accelerator.print(f"\nRunning evaluation at step {global_step}...")
-                                metrics = evaluate(model, eval_dataloader, accelerator)
-                                eval_loss = metrics['eval_loss']
+                            if accelerator.is_main_process:
+                                print(f"✓ Eval Loss: {eval_loss:.4f} | Perplexity: {metrics['eval_perplexity']:.2f}")
+                                with open(eval_log_path, "a") as f:
+                                    metrics['step'] = global_step
+                                    f.write(json.dumps(metrics) + "\n")
                                 
-                                if accelerator.is_main_process:
-                                    print(f"✓ Eval Loss: {eval_loss:.4f} | Perplexity: {metrics['eval_perplexity']:.2f}")
-                                    with open(eval_log_path, "a") as f:
-                                        metrics['step'] = global_step
-                                        f.write(json.dumps(metrics) + "\n")
-                                    
-                                    if eval_loss < best_eval_loss:
-                                        best_eval_loss = eval_loss
-                                        print(f"🎉 New best eval loss: {best_eval_loss:.4f}")
+                                if eval_loss < best_eval_loss:
+                                    best_eval_loss = eval_loss
+                                    print(f"🎉 New best eval loss: {best_eval_loss:.4f}")
+                        
+                        # Checkpointing
+                        if global_step % config['training']['save_steps'] == 0:
+                            # Use eval_loss from above if we just evaluated, otherwise None
+                            checkpoint_eval_loss = best_eval_loss if (just_evaluated and best_eval_loss != float('inf')) else None
                             
                             # Save checkpoint
                             accelerator.print(f"Saving checkpoint at step {global_step}...")
@@ -528,7 +596,7 @@ def main():
                                 accelerator, model, tokenizer, output_dir, 
                                 global_step, checkpoint_tracker, 
                                 config['training']['save_total_limit'],
-                                eval_loss
+                                checkpoint_eval_loss
                             )
                             accelerator.print(f"✓ Checkpoint saved\n")
             
