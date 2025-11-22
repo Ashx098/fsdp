@@ -418,7 +418,7 @@ def main():
     num_update_steps_per_epoch = num_batches_per_epoch // config['training']['gradient_accumulation_steps']
     max_train_steps = num_epochs * num_update_steps_per_epoch
     
-    num_warmup_steps = int(0.03 * max_train_steps)
+    num_warmup_steps = int(0.10 * max_train_steps)  # 10% warmup for stable training
     
     # CRITICAL: The scheduler runs on each rank independently, so each rank steps it max_train_steps times
     # Do NOT prepare the scheduler - it doesn't need to be distributed and prepare() would divide steps by num_processes
