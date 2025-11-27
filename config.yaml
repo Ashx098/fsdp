@@ -1,42 +1,42 @@
 model:
-  name_or_path: "meta-llama/Llama-2-7b-hf" # Replace with your model path
-  use_auth_token: False
+  name_or_path: "/workspace/Avinash/models/GLM-4.5-Air"
+  trust_remote_code: True
 
 data:
-  dataset_path: "wikitext" # Replace with your dataset path
-  dataset_name: "wikitext-2-raw-v1"
+  dataset_path: "/workspace/Avinash/dataset/all_data.jsonl"
+  dataset_name: "HS-v1"
   text_column: "text"
-  block_size: 1024
-  preprocessing_num_workers: 4
+  block_size: 10240 #8192  # Long context for maximum expert coverage 1140
+  num_proc: 8  # Parallel processing for tokenization
+  val_split: 0.25  # Small validation set (1%)
+  preprocessing_num_workers: 8
 
 training:
-  output_dir: "./output"
+  output_dir: "./glm_output"
+  seed: 42
   num_train_epochs: 3
-  per_device_train_batch_size: 4
-  gradient_accumulation_steps: 2
-  learning_rate: 2.0e-4
-  weight_decay: 0.001
-  logging_steps: 10
-  save_steps: 100
-  save_total_limit: 2
-  bf16: True # Use bf16 if supported, else fp16
+  per_device_train_batch_size: 1  # Required for 8k context length
+  per_device_eval_batch_size: 1  # Match train batch size
+  gradient_accumulation_steps: 2  # Set to 2 for packed data
+  learning_rate: 4.0e-5  # Conservative for large model
+  weight_decay: 0.1
+  logging_steps: 1
+  eval_strategy: "steps"  # Run evaluation every eval_steps
+  eval_steps: 20  # Evaluate every 20 steps (~15% of training)
+  save_strategy: "steps"
+  save_steps: 20  # Save every 20 steps for packed data
+  save_total_limit: 3  # Keep only 3 best checkpoints
+  save_on_each_node: false
+  bf16: True
   fp16: False
-  optim: "paged_adamw_32bit"
-  report_to: "tensorboard"
+  gradient_checkpointing: True  # Essential for memory
+  report_to: "none"
+  disable_tqdm: False
 
 lora:
-  r: 8
-  lora_alpha: 32
-  lora_dropout: 0.05
+  r: 64  # REDUCED from 32 - less memory
+  lora_alpha: 128  # Match 2*r
+  lora_dropout: 0.1
   bias: "none"
   task_type: "CAUSAL_LM"
-  target_modules: ["q_proj", "v_proj"] # Adjust based on model architecture
-
-fsdp:
-  # These are passed to Accelerate/Trainer
-  fsdp_transformer_layer_cls_to_wrap: "LlamaDecoderLayer"
-  fsdp: "full_shard auto_wrap"
-  fsdp_config:
-    backward_prefetch: "backward_pre"
-    forward_prefetch: "false"
-    use_orig_params: "false"
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]  # Attention only
